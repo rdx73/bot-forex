@@ -1,60 +1,84 @@
 import streamlit as st
-import requests, json, time, urllib.parse
+import requests, json, time, urllib.parse, os
 from openai import OpenAI
 
 # =============================
-# LOAD TOKENS
+# ENV TOKENS
 # =============================
-def load_file(file_path):
-    try:
-        with open(file_path) as f:
-            return f.read().strip()
-    except:
-        st.error(f"{file_path} tidak ditemukan")
-        st.stop()
+TWELVE_KEY = os.getenv("TWELVE_KEY")
+OPENAI_KEY = os.getenv("OPENAI_KEY")
 
-twelve_key = load_file("key.txt")
-openai_key  = load_file("token.txt")
-client = OpenAI(api_key=openai_key)
+if not TWELVE_KEY or not OPENAI_KEY:
+    st.error("❌ ENV missing: pastikan TWELVE_KEY dan OPENAI_KEY sudah di-set")
+    st.stop()
+
+client = OpenAI(api_key=OPENAI_KEY)
 
 # =============================
-# STREAMLIT PAGE CONFIG
+# STREAMLIT CONFIG
 # =============================
-st.set_page_config(
-    page_title="AI Forex Scanner Login",
-    layout="wide"
-)
+st.set_page_config(page_title="AI Forex Multi-Pair Scanner", layout="wide")
+st.title("📊 AI Forex Multi-Pair Scanner PRO")
 
 # =============================
-# SESSION STATE DEFAULT
+# SESSION STATE LOGIN
 # =============================
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
-if "username" not in st.session_state:
-    st.session_state.username = ""
 
-# =============================
-# FUNCTIONS
-# =============================
 def login(user, pwd):
-    # Ganti ini dengan sistem autentikasi yang kamu mau
-    if user == "admin" and pwd == "1234":
+    if user == "admin" and pwd == "1234":  # bisa diganti sesuai kebutuhan
         st.session_state.logged_in = True
-        st.session_state.username = user
         st.success("Login berhasil! Scroll ke bawah untuk scanner.")
     else:
-        st.error("Username/Password salah")
+        st.error("Username atau password salah!")
 
 def logout():
     st.session_state.logged_in = False
-    st.session_state.username = ""
-    st.success("Logout berhasil!")
+    st.info("Logout berhasil! Silahkan login kembali.")
 
+# =============================
+# LOGIN / LOGOUT UI
+# =============================
+if st.session_state.logged_in:
+    st.sidebar.button("🔒 Logout", on_click=logout)
+else:
+    with st.sidebar.form("login_form"):
+        st.write("### 🔑 Login")
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Login")
+        if submitted:
+            login(username, password)
+
+# Jika belum login, hentikan eksekusi scanner
+if not st.session_state.logged_in:
+    st.stop()
+
+# =============================
+# INPUT PAIR & TIMEFRAME
+# =============================
+pairs_input = st.text_area(
+    "Masukkan pair, pisahkan koma (contoh: EUR/USD, USD/JPY, GBP/USD)", 
+    value="EUR/USD, USD/JPY, GBP/USD, AUD/USD, USD/CHF"
+)
+pairs = [p.strip() for p in pairs_input.split(",") if p.strip()]
+
+timeframe = st.selectbox(
+    "Pilih Timeframe",
+    ["1min", "5min", "15min", "30min", "45min", "1h", "2h", "4h", "8h", "1day", "1week", "1month"],
+    index=5
+)
+
+# =============================
+# VALIDASI LOGIC TRADING
+# =============================
 def validate_logic(data):
     signal = data.get("signal","").lower()
     entry = data.get("entry")
     tp = data.get("tp")
     sl = data.get("sl")
+
     if None in [entry,tp,sl]:
         return False
     if signal=="buy" and not (tp>entry and sl<entry):
@@ -64,58 +88,30 @@ def validate_logic(data):
     return True
 
 # =============================
-# LOGIN PAGE
+# START SCAN
 # =============================
-if not st.session_state.logged_in:
-    st.subheader("🔑 Login")
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
-    if st.button("Login"):
-        login(username, password)
-else:
-    st.sidebar.subheader(f"👤 {st.session_state.username}")
-    if st.sidebar.button("Logout"):
-        logout()
+if st.button("🚀 Start Scan All Pairs"):
 
-    # =============================
-    # SCANNER UI
-    # =============================
-    st.header("📊 AI Forex Multi-Pair Scanner PRO")
+    for pair in pairs:
+        st.info(f"⏳ Fetching candle: {pair} ...")
 
-    # Editable multi-pair input
-    pairs_input = st.text_area(
-        "Masukkan pair, pisahkan koma (contoh: EUR/USD, USD/JPY, GBP/USD)", 
-        value="EUR/USD, USD/JPY, GBP/USD, AUD/USD, USD/CHF"
-    )
-    pairs = [p.strip() for p in pairs_input.split(",") if p.strip()]
+        # Format untuk Twelve Data: tetap pakai slash + tambahkan :FX
+        symbol_api = pair.replace(" ", "") + ":FX"
+        url = f"https://api.twelvedata.com/time_series?symbol={urllib.parse.quote(symbol_api)}&interval={timeframe}&outputsize=100&apikey={TWELVE_KEY}"
 
-    # Pilihan timeframe
-    timeframe = st.selectbox(
-        "Pilih timeframe",
-        options=["1min","5min","15min","30min","45min","1h","2h","4h","8h","1day","1week","1month"],
-        index=5
-    )
+        try:
+            res = requests.get(url, timeout=15).json()
+            if "values" not in res:
+                st.warning(f"⚠️ Gagal fetch {pair}: {res.get('message','Unknown error')}")
+                continue
 
-    if st.button("🚀 Start Scan All Pairs"):
-        for pair in pairs:
-            st.info(f"⏳ Fetching candle: {pair} ...")
-            # Format untuk Twelve Data Forex
-            symbol_api = pair.replace(" ", "") + ":FX"  # EUR/USD → EUR/USD:FX
-            url = f"https://api.twelvedata.com/time_series?symbol={urllib.parse.quote(symbol_api)}&interval={timeframe}&outputsize=100&apikey={twelve_key}"
+            candles = res["values"]
+            candle_str = json.dumps(candles[:50])  # 50 candle terakhir
 
-            try:
-                res = requests.get(url, timeout=15).json()
-                if "values" not in res:
-                    st.warning(f"⚠️ Gagal fetch {pair}: {res.get('message','Unknown error')}")
-                    continue
-
-                candles = res["values"]
-                candle_str = json.dumps(candles[:50])  # 50 candle terakhir
-
-                # =============================
-                # Prompt AI
-                # =============================
-                system_prompt = """
+            # =============================
+            # PROMPT AI
+            # =============================
+            system_prompt = """
 Kamu analis teknikal trading profesional.
 WAJIB:
 - Output JSON valid saja
@@ -127,7 +123,7 @@ WAJIB:
 - Sertakan BMS, FVG, OB
 """
 
-                user_prompt = f"""
+            user_prompt = f"""
 Analisis chart trading {pair} berdasarkan candle data berikut:
 {candle_str}
 
@@ -146,53 +142,52 @@ FORMAT JSON:
 }}
 """
 
-                # Retry 3x
-                for attempt in range(3):
-                    try:
-                        response = client.chat.completions.create(
-                            model="gpt-4o",
-                            temperature=0,
-                            messages=[
-                                {"role":"system","content":system_prompt},
-                                {"role":"user","content":user_prompt}
-                            ]
-                        )
-                        ai_output = response.choices[0].message.content.strip()
-                        ai_json = json.loads(ai_output)
+            # Retry 3x
+            for attempt in range(3):
+                try:
+                    response = client.chat.completions.create(
+                        model="gpt-4o",
+                        temperature=0,
+                        messages=[
+                            {"role":"system","content":system_prompt},
+                            {"role":"user","content":user_prompt}
+                        ]
+                    )
+                    ai_output = response.choices[0].message.content.strip()
+                    ai_json = json.loads(ai_output)
 
-                        # Validasi logic trading
-                        if not validate_logic(ai_json):
-                            st.warning(f"⚠️ {pair}: TP/SL tidak realistis → signal diabaikan")
-                            break
-
-                        # =============================
-                        # OUTPUT
-                        # =============================
-                        st.subheader(f"📌 Analisa: {pair}")
-                        trend_icon = "📈" if ai_json["trend"].lower()=="uptrend" else "📉" if ai_json["trend"].lower()=="downtrend" else "➖"
-                        signal_icon = "🟢 Buy" if ai_json["signal"].lower()=="buy" else "🔴 Sell" if ai_json["signal"].lower()=="sell" else "⚪ Neutral"
-                        pending_icon = "⏳ "+ai_json["pending_order"]
-
-                        col1,col2 = st.columns(2)
-                        with col1:
-                            st.markdown(f"<b>{trend_icon} Trend</b> : {ai_json.get('trend','-')}", unsafe_allow_html=True)
-                            st.markdown(f"<b>{signal_icon} Signal</b> : {ai_json.get('signal','-')}", unsafe_allow_html=True)
-                            st.markdown(f"<b>Entry</b> : {ai_json.get('entry','-')}", unsafe_allow_html=True)
-                        with col2:
-                            st.markdown(f"<b>TP</b> : {ai_json.get('tp','-')}", unsafe_allow_html=True)
-                            st.markdown(f"<b>SL</b> : {ai_json.get('sl','-')}", unsafe_allow_html=True)
-                            st.markdown(f"<b>{pending_icon}</b>", unsafe_allow_html=True)
-                            st.markdown(f"<b>Confidence</b> : {ai_json.get('confidence','-')}%", unsafe_allow_html=True)
-                            st.markdown(f"<b>BMS</b> : {ai_json.get('BMS','-')}", unsafe_allow_html=True)
-                            st.markdown(f"<b>FVG</b> : {ai_json.get('FVG','-')}", unsafe_allow_html=True)
-                            st.markdown(f"<b>OB</b> : {ai_json.get('OB','-')}", unsafe_allow_html=True)
-
+                    if not validate_logic(ai_json):
+                        st.warning(f"⚠️ {pair}: TP/SL tidak realistis → signal diabaikan")
                         break
-                    except Exception as e:
-                        if attempt==2:
-                            st.error(f"{pair}: AI gagal analisis")
-                            st.exception(e)
-                        time.sleep(2)
 
-            except Exception as e:
-                st.warning(f"⚠️ Gagal fetch {pair}: {e}")
+                    # =============================
+                    # OUTPUT STREAMLIT
+                    # =============================
+                    st.subheader(f"📌 Analisa: {pair}")
+                    trend_icon = "📈" if ai_json["trend"].lower()=="uptrend" else "📉" if ai_json["trend"].lower()=="downtrend" else "➖"
+                    signal_icon = "🟢 Buy" if ai_json["signal"].lower()=="buy" else "🔴 Sell" if ai_json["signal"].lower()=="sell" else "⚪ Neutral"
+                    pending_icon = "⏳ "+ai_json["pending_order"]
+
+                    col1,col2 = st.columns(2)
+                    with col1:
+                        st.markdown(f"<b>{trend_icon} Trend</b> : {ai_json.get('trend','-')}", unsafe_allow_html=True)
+                        st.markdown(f"<b>{signal_icon} Signal</b> : {ai_json.get('signal','-')}", unsafe_allow_html=True)
+                        st.markdown(f"<b>Entry</b> : {ai_json.get('entry','-')}", unsafe_allow_html=True)
+                    with col2:
+                        st.markdown(f"<b>TP</b> : {ai_json.get('tp','-')}", unsafe_allow_html=True)
+                        st.markdown(f"<b>SL</b> : {ai_json.get('sl','-')}", unsafe_allow_html=True)
+                        st.markdown(f"<b>{pending_icon}</b>", unsafe_allow_html=True)
+                        st.markdown(f"<b>Confidence</b> : {ai_json.get('confidence','-')}%", unsafe_allow_html=True)
+                        st.markdown(f"<b>BMS</b> : {ai_json.get('BMS','-')}", unsafe_allow_html=True)
+                        st.markdown(f"<b>FVG</b> : {ai_json.get('FVG','-')}", unsafe_allow_html=True)
+                        st.markdown(f"<b>OB</b> : {ai_json.get('OB','-')}", unsafe_allow_html=True)
+
+                    break
+                except Exception as e:
+                    if attempt==2:
+                        st.error(f"{pair}: AI gagal analisis")
+                        st.exception(e)
+                    time.sleep(2)
+
+        except Exception as e:
+            st.warning(f"⚠️ Gagal fetch {pair}: {e}")
