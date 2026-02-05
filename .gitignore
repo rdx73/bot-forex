@@ -1,13 +1,4 @@
-# Python
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-
-# Streamlit / env
-.key.txt
-.token.txt
+# .gitignore
 .env
-
-# OS
-.DS_Store
+*.pyc
+__pycache__/
