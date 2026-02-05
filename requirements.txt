@@ -1,0 +1,5 @@
+streamlit>=1.24
+requests
+openai
+pandas
+numpy
